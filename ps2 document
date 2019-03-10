@@ -1,0 +1,13 @@
+problem statement 2
+   
+X,Y are the two initial positon matrix. A is the matrix such that Xkp=A*X Ykp=A*Y.
+delX is the error in measurement of position. delV is the error in measurement of velocity.
+P is the process ccovariance matrix. Pkp=A*P*A'.
+K is the kalman gain.
+K=(Pkp/(Pkp+R))
+x and y contains the next measured position and velocity in x and y direction.
+Xk=Xkp-K*(x-XKp).
+Yk=Ykp-K*(y-YKp).
+Xk->X
+Pk=(I-K)*Pkp 
+Pk->P.
