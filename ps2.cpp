@@ -1,151 +1,154 @@
-#include "opencv2/highgui/highgui.hpp"
-#include "opencv2/core/core.hpp"
-#include "opencv2/imgproc/imgproc.hpp"
-#include <math.h>
-#include <fstream>
-//#include <Eigen3/dense>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/video/video.hpp>
+#include <opencv2/videoio.hpp>
+#include <opencv2/video/tracking.hpp> 
 #include <iostream>
+#include <vector>
 
-using namespace cv;
 using namespace std;
+using namespace cv;
 
-
-void multiplyMatrices(int firstMatrix[2][], int secondMatrix[2][], int mult[2][], int rowFirst, int columnFirst, int rowSecond, int columnSecond)
-{
-	int i, j, k;
-
-	// Initializing elements of matrix mult to 0.
-	for(i = 0; i < rowFirst; ++i)
-	{
-		for(j = 0; j < columnSecond; ++j)
-		{
-			mult[i][j] = 0;
-		}
-	}
-
-	// Multiplying matrix firstMatrix and secondMatrix and storing in array mult.
-	for(i = 0; i < rowFirst; ++i)
-	{
-		for(j = 0; j < columnSecond; ++j)
-		{
-			for(k=0; k<columnFirst; ++k)
-			{
-				mult[i][j] += firstMatrix[i][k] * secondMatrix[k][j];
-			}
-		}
-	}
-}
-
-void display(int Mat[2][], int rows, int columns)
-{
-	int i, j;
-
-	for(i = 0; i < rows; ++i)
-	{
-		for(j = 0; j < columns; ++j)
-		{
-			cout << Mat[i][j] << " ";
-			if(j == columnSecond - 1)
-				cout << endl << endl;
-		}
-	}
-}
+int predictsize = 6; 
+int measuredsize = 4;  
+int control = 0;
+ 
 int main()
 {
-	int t,i,j;
-	cout<<"enter the time interval"<<endl;
-	cin>>t;
-	VideoCapture cap("3.avi");
+	int i,j;
+	Mat img;
+	Mat predict(predictsize, 1, CV_32F);  // [x,y,vx,vy,w,h]
+    Mat measured(measuredsize, 1, CV_32F);    // [x,y,w,h]
+	KalmanFilter k(predictsize , measuredsize, control, CV_32F);
 	
-	if(!cap.isOpened()){
-    cout << "Error opening video stream or file" << endl;
-    return -1;
-  }
+    for(i=0;i<24;i++)
+    {
+    	if(i==0 || i==7 || i==16|| i==23)
+    		 k.measurementMatrix.at<float>(i)=1.0f;
+    	else  k.measurementMatrix.at<float>(i)=0.0f;
+
+    }
+    setIdentity(k.transitionMatrix);
+    setIdentity(k.measurementNoiseCov,Scalar(1e-1));
+    setIdentity(k.processNoiseCov, Scalar(1e-2)); 
+    k.processNoiseCov.at<float>(14) = 1.0f; 
+    k.processNoiseCov.at<float>(21) = 1.0f;
+ 	VideoCapture cap("3.avi");
+    cap >> img;
+    VideoWriter video("output.avi",CV_FOURCC('M','J','P','G'),60, Size(img.cols,img.rows));     //saving the video during code    source- https://docs.opencv.org/3.1.0/dd/d43/tutorial_py_video_display.html
+ 	if (!cap.isOpened())
+    {
+        cout << "Can't open video\n";
+        return -1;
+    }
+    cout << "\nHit esc to exit";
+    char ch = 'a';
+    int found = 0;
+    int notfound = 0;
+    double ticks = 0;
+    while(ch!=27)
+    {
+    	
+        cap >> img;
+        Mat img1;
+        img.copyTo( img1 );
+        double precTick = ticks;
+        ticks = (double) getTickCount(); 
+        double T = (ticks - precTick) / getTickFrequency();
+        if(found)
+        {
+        	k.transitionMatrix.at<float>(2) = T;
+            k.transitionMatrix.at<float>(9) = T;
+            cout << "T:" << T << endl;
+            predict = k.predict();
+            cout << " State:" << predict<< endl;
+            Rect predRect;
+            predRect.width = predict.at<float>(4);
+            predRect.height = predict.at<float>(5);
+            predRect.x = predict.at<float>(0) - predRect.width / 2;
+            predRect.y = predict.at<float>(1) - predRect.height / 2;
+            rectangle(img1, predRect, CV_RGB(0,255,0), 2);
+            
+        }
+        Mat smooth;
+        GaussianBlur(img, smooth, Size(5, 5), 3.0, 3.0);
+        Mat Hsv;
+        cvtColor(smooth, Hsv, CV_BGR2HSV);
+        Mat result (img.rows,img.cols,CV_8UC1, Scalar(0));
+        inRange(Hsv, Scalar(0,0,0),Scalar(180, 255, 60),result);
+        erode(result, result, Mat(), Point(-1, -1), 2);
+        dilate(result, result , Mat(), Point(-1, -1), 2);
+        namedWindow("result",WINDOW_NORMAL);
+        imshow("result", result);
+ 		vector<vector<Point> > contours;
+        findContours(result, contours, CV_RETR_EXTERNAL,CV_CHAIN_APPROX_NONE);
+        vector<vector<Point> > Goals;
+        vector<Rect> Goals_Box;
+        for (size_t i = 0; i < contours.size(); i++)
+        {
+            Rect gBox;
+            gBox = boundingRect(contours[i]); 
+            float ratio = (float) gBox.width / (float) gBox.height;            
+            if (ratio >= 0.8 && ratio <= 1.25 && gBox.area() >= 10000) 
+            {
+                Goals.push_back(contours[i]);
+                Goals_Box.push_back(gBox);
+            }
+        }
+        cout << "no of Goals found:" << Goals_Box.size() << endl;
+        for (size_t i = 0; i < Goals.size(); i++)
+        {
+            drawContours(img1, Goals, i, CV_RGB(255,255,255), 1);
+            rectangle(img1, Goals_Box[i], CV_RGB(0,255,0), 2);              
+        }
+        if (Goals.size() == 0)
+        {
+            notfound++;
+        }
+        else
+        {
+        	notfound = 0;
+        	measured.at<float>(0) = Goals_Box[0].x + Goals_Box[0].width / 2;
+            measured.at<float>(1) = Goals_Box[0].y + Goals_Box[0].height / 2;
+            measured.at<float>(2) = (float)Goals_Box[0].width;
+            measured.at<float>(3) = (float)Goals_Box[0].height;
+            if (!found)                                                
+            {
+                
+                predict.at<float>(0) = measured.at<float>(0);
+                predict.at<float>(1) = measured.at<float>(1);
+                predict.at<float>(2) = 0;
+                predict.at<float>(3) = 0;
+                predict.at<float>(4) = measured.at<float>(2);
+                predict.at<float>(5) = measured.at<float>(3); 
+                k.errorCovPre.at<float>(0) = 1; 
+                k.errorCovPre.at<float>(7) = 1; 
+                k.errorCovPre.at<float>(14) = 1;
+                k.errorCovPre.at<float>(21) = 1;
+                k.errorCovPre.at<float>(28) = 1;
+                k.errorCovPre.at<float>(35) = 1;
+               
+                k.statePost = predict;
+                
+                found = 1;
+            }
+             else
+                k.correct(measured);
+            cout << "Measure matrix:" << endl << measured << endl; 
+
+        }
+        namedWindow("tracking",WINDOW_NORMAL);
+        imshow("tracking", img1);
+        video.write(img1);
+        ch = waitKey(20);
 
 
-	int X[2][1],Y[2][1];
-	int P[2][2],R[2][2];
-	/* Fill the matrix Px and Py by the covariance of the velocities and position; and also fill the measurement covariance matrix */
-
-	while(1)
-	{
-		Mat frame;
-        cap >> frame;
-  
-        if (frame.empty())
-           break;
-       	imshow( "Frame", frame );
-       	/*here take the threshold for determining red colour*/
-
-		int A[2][2],A1[2][2],x[2][1],y[2][1],Xk[2][1],Yk[2][1],Pk[2][2];
-		A[0][0]=1;A[0][1]=t;A[1][0]=0;A[1][1]=1;
-		A1[0][0]=1;A[0][1]=0;A[1][0]=t;A[1][1]=1;
-		int Xkp[2][1];
-		multiplyMatrices(A,X,Xkp,2,2,2,1);
-		int Ykp[2][1];
-		multiplyMatrices(A,Y,Ykp,2,2,2,1);
-		int Pkp[2][2],Q[2][2];
-		multiplyMatrices(A,P,Q,2,2,2,2);
-		multiplyMatrices(Q,A1,Pkp,2,2,2,2);
-		Pkp[0][1]=0;Pkp[1][0]=0;
-		int K[2][2],H[2][2];
-		for(i=0;i<2;i++)
-		{
-			for(j=0;j<2;j++)
-			{
-				H[i][j]=Pkp[i][j]+R[i][j];
-			}
-		}
-		for(i=0;i<2;i++)
-		{
-			for(j=0;j<2;j++)
-			{
-				K[i][j]=Pkp[i][j]/H[i][j];
-			}
-		}
-		/*put the next values of x and y in the matrixes*/
-		int h[2][1],K1[2][1];
-		h[0][0]=x[0][0]-Xkp[0][0];
-		h[1][0]=x[1][0]-Xkp[1][0];
-		multiplyMatrices(K,h,K1,2,2,2,1);
-		Xk[0][0]=Xkp[0][0]-K1[0][0];
-		Xk[1][0]=Xkp[1][0]-K1[1][0];
-		h[0][0]=y[0][0]-Ykp[0][0];
-		h[1][0]=y[1][0]-Ykp[1][0];
-		multiplyMatrices(K,h,K1,2,2,2,1);
-		Yk[0][0]=Ykp[0][0]-K1[0][0];
-		Yk[1][0]=Ykp[1][0]-K1[1][0];
-		for(i=0;i<2;i++)
-		{
-			for(j=0;j<1;j++)
-			{
-				X[i][j]=Xk[i][j];
-				Y[i][j]=Yk[i][j];
-			}
-		}
-		
-		int a[2][2];
-		a[0][0]=1-K[0][0];a[0][1]=K[0][1];a[1][1]=1-K[1][1];a[1][0]=K[1][0];
-		multiplyMatrices(a,Pkp,Pk,2,2,2,2);
-		for(i=0;i<2;i++)
-		{
-			for(j=0;j<2;j++)
-			{
-				P[i][j]=Pk[i][j];
-			}
-		}
-		 char c=(char)waitKey(25);
-		 cout<<"press esc to exit"<<endl;
-    	if(c==27)
-      	break;
-
-
-
-
-	}
-	cap.release();
-	destroyAllWindows();
-
+    }
+    cap.release();
+    video.release();
+    destroyAllWindows();
+	return 0;
+        
 
 }
-
